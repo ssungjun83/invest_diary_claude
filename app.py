@@ -6408,8 +6408,8 @@ def generate_company_analysis_with_ai(
 재무 데이터(JSON):
 {json.dumps(financial_summary, ensure_ascii=False)}
 
-구글 웹검색 발췌(기업 실체 정보, 우선 참고):
-{google_context_text or "구글 검색 컨텍스트 없음"}
+구글 웹검색 발췌(기업 실체 정보, 우선 참고 — URL/링크는 제외하고 내용만 활용):
+{_clean_google_context_for_ai(google_context_text) or "구글 검색 컨텍스트 없음"}
 
 위 정보를 바탕으로 장기투자 관점의 기업 분석을 한국어로 작성해 주세요.
 반드시 JSON 객체만 출력하세요. 키는 아래와 같습니다.
@@ -6437,8 +6437,10 @@ def generate_company_analysis_with_ai(
 - 일반론 문장(예: "판매량×단가×마진")만 반복하지 말 것
 - 구글 발췌에서 제품명/원재료명/프로젝트명 등 고유명사를 최소 10개 이상 반영
 - 확인이 불확실한 항목은 '(확인필요)'를 붙일 것
+- URL, 링크, 출처 표기는 절대 포함하지 말 것 (https://... 형태 금지)
+- 마크다운 헤더(###) 기호를 사용하지 말 것
 """
-    system_prompt = "너는 재무 데이터 기반 기업분석 어시스턴트다. 반드시 JSON만 출력한다."
+    system_prompt = "너는 재무 데이터 기반 기업분석 어시스턴트다. 반드시 JSON만 출력한다. URL이나 마크다운 헤더는 절대 포함하지 않는다."
     text, err = call_ai_text(
         provider=provider,
         api_key=api_key,
@@ -6446,8 +6448,8 @@ def generate_company_analysis_with_ai(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         temperature=0.2,
-        max_output_tokens=1400,
-        timeout_sec=35,
+        max_output_tokens=3000,
+        timeout_sec=60,
     )
     if err:
         return {}, f"AI 생성 실패: {err}", google_research_note
@@ -6562,6 +6564,25 @@ def _fmt_pct_brief(value) -> str:
     return f"{num:.2f}%"
 
 
+def _clean_google_context_for_ai(google_context_text: str) -> str:
+    """AI 프롬프트 삽입 전 구글 컨텍스트에서 URL/마크다운 헤더 제거."""
+    text = str(google_context_text or "").strip()
+    if not text:
+        return ""
+    cleaned_lines = []
+    for line in text.splitlines():
+        ln = str(line or "").strip()
+        ln = re.sub(r"\s*\|\s*url=https?://\S+\s*$", "", ln)
+        ln = re.sub(r"https?://\S+", "", ln)
+        ln = re.sub(r"#{1,6}\s*", "", ln)
+        ln = re.sub(r"\[Read more\]", "", ln, flags=re.IGNORECASE)
+        ln = re.sub(r"›\s*", "", ln)
+        ln = re.sub(r"\s+", " ", ln).strip()
+        if ln:
+            cleaned_lines.append(ln)
+    return "\n".join(cleaned_lines)
+
+
 def _extract_facts_from_google_context(google_context_text: str, limit: int = 8) -> list[str]:
     text = str(google_context_text or "").strip()
     if not text:
@@ -6576,6 +6597,11 @@ def _extract_facts_from_google_context(google_context_text: str, limit: int = 8)
         ln = re.sub(r"\s*\|\s*source=[^|]+", "", ln)
         ln = re.sub(r"\s*title=", "", ln)
         ln = re.sub(r"\s*snippet=", " / ", ln)
+        # URL 및 마크다운 헤더/링크 제거
+        ln = re.sub(r"https?://\S+", "", ln)
+        ln = re.sub(r"#{1,6}\s*", "", ln)
+        ln = re.sub(r"\[Read more\]", "", ln, flags=re.IGNORECASE)
+        ln = re.sub(r"›\s*", "", ln)
         ln = re.sub(r"\s+", " ", ln).strip(" -")
         if len(ln) < 18:
             continue
@@ -6678,6 +6704,15 @@ def generate_company_analysis_template(
         "raw_materials": _lines_to_text(raw_materials),
         "profit_up_factors": _lines_to_text(up_factors),
         "profit_down_factors": _lines_to_text(down_factors),
+        "investment_thesis": _lines_to_text([
+            f"현재 PER {pe_text}, PBR {pb_text} 수준에서 저평가 여부를 확인해야 합니다.",
+            f"ROE {roe_text} 기준 자본 효율성 개선 추세가 있는지 점검이 필요합니다.",
+            "업황 회복 또는 신규 성장 촉매 발생 시 이익 레버리지 효과가 기대됩니다.",
+        ]),
+        "valuation_view": (
+            f"현재 PER {pe_text}, PBR {pb_text} 수준입니다. "
+            "AI 분석을 재시도하거나 재무 데이터를 업데이트하여 정밀 밸류에이션 평가를 확인하세요."
+        ),
         "key_takeaway": _lines_to_text(takeaway),
     }
 
@@ -10195,6 +10230,8 @@ def render_company_analysis_tab(current_df: pd.DataFrame) -> None:
         "analysis_raw_materials",
         "analysis_profit_up_factors",
         "analysis_profit_down_factors",
+        "analysis_investment_thesis",
+        "analysis_valuation_view",
         "analysis_key_takeaway",
     ]:
         if key not in st.session_state:
@@ -10207,6 +10244,8 @@ def render_company_analysis_tab(current_df: pd.DataFrame) -> None:
             "analysis_raw_materials",
             "analysis_profit_up_factors",
             "analysis_profit_down_factors",
+            "analysis_investment_thesis",
+            "analysis_valuation_view",
             "analysis_key_takeaway",
         ]:
             if key in pending_history_apply:
@@ -10240,650 +10279,416 @@ def render_company_analysis_tab(current_df: pd.DataFrame) -> None:
         "직접입력",
     )
 
-    st.markdown("#### 기업 리스트 관리")
-    if "analysis_new_company_name" not in st.session_state:
-        st.session_state["analysis_new_company_name"] = ""
-    if "analysis_new_company_ticker" not in st.session_state:
-        st.session_state["analysis_new_company_ticker"] = ""
-    if "analysis_new_company_sector" not in st.session_state:
-        st.session_state["analysis_new_company_sector"] = ""
-    if "analysis_watch_image_uploader_nonce" not in st.session_state:
-        st.session_state["analysis_watch_image_uploader_nonce"] = 0
-    if "analysis_watch_image_enrich_meta" not in st.session_state:
-        st.session_state["analysis_watch_image_enrich_meta"] = True
-    if "analysis_selected_overview_company" not in st.session_state:
-        st.session_state["analysis_selected_overview_company"] = ""
-    if "analysis_selected_overview_ticker_input" not in st.session_state:
-        st.session_state["analysis_selected_overview_ticker_input"] = ""
-    if "analysis_selected_overview_sector_input" not in st.session_state:
-        st.session_state["analysis_selected_overview_sector_input"] = ""
-
-    add_col1, add_col2, add_col3, add_col4, add_col5 = st.columns([1.3, 1.0, 1.0, 0.9, 0.7])
-    with add_col1:
-        st.text_input("추가 기업명", key="analysis_new_company_name", placeholder="예: 애플")
-    with add_col2:
-        st.text_input("추가 티커(선택)", key="analysis_new_company_ticker", placeholder="예: AAPL")
-    with add_col3:
-        st.text_input("산업섹터(선택)", key="analysis_new_company_sector", placeholder="예: 철강, 금융")
-    with add_col4:
-        lookup_new_company_ticker_btn = st.button("AI 티커 조회", key="analysis_lookup_new_company_ticker_btn")
-    with add_col5:
-        add_company_btn = st.button("기업 추가", key="analysis_add_company_btn")
-
-    if lookup_new_company_ticker_btn:
-        lookup_name = (st.session_state.get("analysis_new_company_name") or "").strip()
-        if not lookup_name:
-            st.warning("티커를 조회할 기업명을 먼저 입력해 주세요.")
-        else:
-            analysis_ai_provider, analysis_ai_api_key, analysis_ai_model = get_ai_settings_from_session("analysis")
-            auto_ticker, auto_src = resolve_ticker_auto_with_retry(
-                lookup_name,
-                use_ai=bool((analysis_ai_api_key or "").strip()),
-                api_key=analysis_ai_api_key,
-                model=analysis_ai_model,
-                provider=analysis_ai_provider,
-                market_preference=market_pref_map.get(lookup_name, ""),
-            )
-            auto_ticker = clean_valid_ticker(auto_ticker)
-            if auto_ticker:
-                st.session_state["analysis_new_company_ticker"] = auto_ticker
-                st.session_state["analysis_new_company_ticker_notice"] = (
-                    f"{lookup_name} 티커 자동 입력: {auto_ticker} ({auto_src or '자동 탐색'})"
-                )
-                st.rerun()
-            st.warning(auto_src or "티커를 찾지 못했습니다.")
-
-    if add_company_btn:
-        new_name = (st.session_state.get("analysis_new_company_name") or "").strip()
-        new_ticker = clean_valid_ticker(st.session_state.get("analysis_new_company_ticker") or "")
-        new_sector = (st.session_state.get("analysis_new_company_sector") or "").strip()
-        analysis_ai_provider, analysis_ai_api_key, analysis_ai_model = get_ai_settings_from_session("analysis")
-        if not new_name:
-            st.warning("추가할 기업명을 입력해 주세요.")
-        else:
-            resolved_sector = new_sector
-            if not resolved_sector:
-                resolved_sector, sector_src = resolve_sector_auto(
-                    new_name,
-                    new_ticker,
-                    ai_api_key=analysis_ai_api_key,
-                    ai_model=analysis_ai_model,
-                    ai_provider=analysis_ai_provider,
-                )
-                if not resolved_sector and sector_src:
-                    st.caption(f"섹터 자동 조회 실패: {sector_src}")
-            if not resolved_sector:
-                resolved_sector = infer_sector_from_name_heuristic(new_name, new_ticker)
-            upsert_company_list_entry(new_name, new_ticker, sector=resolved_sector, source="manual")
+    with st.expander("기업 리스트 관리", expanded=False):
+        if "analysis_new_company_name" not in st.session_state:
             st.session_state["analysis_new_company_name"] = ""
+        if "analysis_new_company_ticker" not in st.session_state:
             st.session_state["analysis_new_company_ticker"] = ""
+        if "analysis_new_company_sector" not in st.session_state:
             st.session_state["analysis_new_company_sector"] = ""
-            st.session_state["analysis_company_name_pending"] = new_name
-            if new_ticker:
-                st.session_state["analysis_ticker_pending"] = new_ticker
-            st.success(f"{new_name} 기업을 리스트에 추가했습니다.")
-            st.rerun()
+        if "analysis_watch_image_uploader_nonce" not in st.session_state:
+            st.session_state["analysis_watch_image_uploader_nonce"] = 0
+        if "analysis_watch_image_enrich_meta" not in st.session_state:
+            st.session_state["analysis_watch_image_enrich_meta"] = True
+        if "analysis_selected_overview_company" not in st.session_state:
+            st.session_state["analysis_selected_overview_company"] = ""
+        if "analysis_selected_overview_ticker_input" not in st.session_state:
+            st.session_state["analysis_selected_overview_ticker_input"] = ""
+        if "analysis_selected_overview_sector_input" not in st.session_state:
+            st.session_state["analysis_selected_overview_sector_input"] = ""
 
-    saved_list_names = sorted(set(listed_names))
-    remove_options = ["선택안함"] + saved_list_names
-    if (
-        "analysis_remove_company_name" in st.session_state
-        and st.session_state["analysis_remove_company_name"] not in remove_options
-    ):
-        st.session_state["analysis_remove_company_name"] = "선택안함"
-    del_col1, del_col2 = st.columns([1.5, 0.8])
-    with del_col1:
-        remove_name = st.selectbox("추가기업 삭제", remove_options, key="analysis_remove_company_name")
-    with del_col2:
-        remove_btn = st.button("선택 삭제", key="analysis_remove_company_btn")
-    if remove_btn:
-        if remove_name == "선택안함":
-            st.warning("삭제할 기업을 선택해 주세요.")
-        else:
-            delete_company_list_entry(remove_name)
-            if (st.session_state.get("analysis_company_name_input") or "").strip() == remove_name:
-                st.session_state["analysis_company_name_pending"] = ""
-                st.session_state["analysis_ticker_pending"] = ""
-            st.success(f"{remove_name} 기업을 추가 리스트에서 삭제했습니다.")
-            st.rerun()
+        add_col1, add_col2, add_col3, add_col4, add_col5 = st.columns([1.3, 1.0, 1.0, 0.9, 0.7])
+        with add_col1:
+            st.text_input("추가 기업명", key="analysis_new_company_name", placeholder="예: 애플")
+        with add_col2:
+            st.text_input("추가 티커(선택)", key="analysis_new_company_ticker", placeholder="예: AAPL")
+        with add_col3:
+            st.text_input("산업섹터(선택)", key="analysis_new_company_sector", placeholder="예: 철강, 금융")
+        with add_col4:
+            lookup_new_company_ticker_btn = st.button("AI 티커 조회", key="analysis_lookup_new_company_ticker_btn")
+        with add_col5:
+            add_company_btn = st.button("기업 추가", key="analysis_add_company_btn")
 
-    st.markdown("##### 이미지로 관심종목 리스트 추가 (AI)")
-    st.caption("여기서 추가되는 항목은 보유현황이 아니라 기업 리스트(관심종목)만 업데이트됩니다.")
-    watch_uploader_key = f"analysis_watch_image_uploader_{st.session_state['analysis_watch_image_uploader_nonce']}"
-    watch_col1, watch_col2 = st.columns([1.35, 1.0])
-    with watch_col1:
-        watch_image = st.file_uploader(
-            "관심종목 이미지",
-            type=["png", "jpg", "jpeg", "webp"],
-            key=watch_uploader_key,
-        )
-    with watch_col2:
-        st.checkbox(
-            "티커/산업섹터 자동 보강",
-            key="analysis_watch_image_enrich_meta",
-            help="이미지에서 빈 값이면 API/AI로 티커와 섹터를 추가 탐색합니다.",
-        )
-        watch_import_btn = st.button(
-            "이미지로 관심종목 추가",
-            key="analysis_watch_image_import_btn",
-            type="primary",
-        )
-
-    if watch_image is not None:
-        st.image(watch_image, caption="업로드된 관심종목 이미지", use_container_width=True)
-
-    if watch_import_btn:
-        if watch_image is None:
-            st.warning("먼저 이미지를 업로드해 주세요.")
-        else:
-            ai_provider, ai_api_key, ai_model = get_ai_settings_from_session("analysis")
-            parsed_rows, parse_err = extract_company_watchlist_from_image_with_ai(
-                image_bytes=watch_image.getvalue(),
-                mime_type=str(getattr(watch_image, "type", "") or "image/png"),
-                provider=ai_provider,
-                api_key=ai_api_key,
-                model=ai_model,
-            )
-            if parse_err:
-                st.error(parse_err)
-            elif not parsed_rows:
-                st.warning("이미지에서 기업 목록을 찾지 못했습니다. 더 선명한 표/목록 이미지를 사용해 주세요.")
+        if lookup_new_company_ticker_btn:
+            lookup_name = (st.session_state.get("analysis_new_company_name") or "").strip()
+            if not lookup_name:
+                st.warning("티커를 조회할 기업명을 먼저 입력해 주세요.")
             else:
-                enrich_meta = bool(st.session_state.get("analysis_watch_image_enrich_meta", True))
-                inserted_count = 0
-                unresolved = []
-                first_added_name = ""
-                with st.spinner("관심종목 리스트에 반영 중입니다..."):
-                    for item in parsed_rows:
-                        if not isinstance(item, dict):
-                            continue
-                        stock_name = str(item.get("stock_name") or "").strip()
-                        if not stock_name:
-                            continue
-                        ticker = clean_valid_ticker(str(item.get("ticker") or ""))
-                        sector = str(item.get("sector") or "").strip()
-                        market_pref = market_pref_map.get(stock_name, "")
+                analysis_ai_provider, analysis_ai_api_key, analysis_ai_model = get_ai_settings_from_session("analysis")
+                auto_ticker, auto_src = resolve_ticker_auto_with_retry(
+                    lookup_name,
+                    use_ai=bool((analysis_ai_api_key or "").strip()),
+                    api_key=analysis_ai_api_key,
+                    model=analysis_ai_model,
+                    provider=analysis_ai_provider,
+                    market_preference=market_pref_map.get(lookup_name, ""),
+                )
+                auto_ticker = clean_valid_ticker(auto_ticker)
+                if auto_ticker:
+                    st.session_state["analysis_new_company_ticker"] = auto_ticker
+                    st.session_state["analysis_new_company_ticker_notice"] = (
+                        f"{lookup_name} 티커 자동 입력: {auto_ticker} ({auto_src or '자동 탐색'})"
+                    )
+                    st.rerun()
+                st.warning(auto_src or "티커를 찾지 못했습니다.")
 
-                        if enrich_meta and not ticker:
-                            auto_ticker, _ = resolve_ticker_auto_with_retry(
-                                stock_name,
-                                use_ai=bool(ai_api_key),
-                                api_key=ai_api_key,
-                                model=ai_model,
-                                provider=ai_provider,
-                                market_preference=market_pref,
-                            )
-                            if auto_ticker:
-                                ticker = auto_ticker
-
-                        if enrich_meta and not sector:
-                            auto_sector, _ = resolve_sector_auto(
-                                stock_name,
-                                ticker,
-                                ai_api_key=ai_api_key,
-                                ai_model=ai_model,
-                                ai_provider=ai_provider,
-                            )
-                            if auto_sector:
-                                sector = auto_sector
-                        if not sector:
-                            sector = infer_sector_from_name_heuristic(stock_name, ticker)
-
-                        upsert_company_list_entry(stock_name, ticker, sector=sector, source="image_watch_ai")
-                        inserted_count += 1
-                        if not first_added_name:
-                            first_added_name = stock_name
-                        if not ticker or not sector:
-                            unresolved.append(stock_name)
-
-                st.session_state["analysis_watch_image_uploader_nonce"] += 1
-                if first_added_name:
-                    st.session_state["analysis_company_name_pending"] = first_added_name
-                unresolved_count = len(set(unresolved))
-                msg = f"이미지 관심종목 추가 완료: {inserted_count}개 반영"
-                if unresolved_count > 0:
-                    msg += f" / 티커·섹터 일부 미완성 {unresolved_count}개"
-                st.session_state["analysis_watch_image_notice"] = msg
+        if add_company_btn:
+            new_name = (st.session_state.get("analysis_new_company_name") or "").strip()
+            new_ticker = clean_valid_ticker(st.session_state.get("analysis_new_company_ticker") or "")
+            new_sector = (st.session_state.get("analysis_new_company_sector") or "").strip()
+            analysis_ai_provider, analysis_ai_api_key, analysis_ai_model = get_ai_settings_from_session("analysis")
+            if not new_name:
+                st.warning("추가할 기업명을 입력해 주세요.")
+            else:
+                resolved_sector = new_sector
+                if not resolved_sector:
+                    resolved_sector, sector_src = resolve_sector_auto(
+                        new_name,
+                        new_ticker,
+                        ai_api_key=analysis_ai_api_key,
+                        ai_model=analysis_ai_model,
+                        ai_provider=analysis_ai_provider,
+                    )
+                    if not resolved_sector and sector_src:
+                        st.caption(f"섹터 자동 조회 실패: {sector_src}")
+                if not resolved_sector:
+                    resolved_sector = infer_sector_from_name_heuristic(new_name, new_ticker)
+                upsert_company_list_entry(new_name, new_ticker, sector=resolved_sector, source="manual")
+                st.session_state["analysis_new_company_name"] = ""
+                st.session_state["analysis_new_company_ticker"] = ""
+                st.session_state["analysis_new_company_sector"] = ""
+                st.session_state["analysis_company_name_pending"] = new_name
+                if new_ticker:
+                    st.session_state["analysis_ticker_pending"] = new_ticker
+                st.success(f"{new_name} 기업을 리스트에 추가했습니다.")
                 st.rerun()
 
-    if "analysis_watch_image_notice" in st.session_state:
-        st.success(st.session_state.pop("analysis_watch_image_notice"))
-
-    holding_set = set(stock_names)
-    listed_set = set(listed_names)
-    ticker_map = {}
-    sector_map = {}
-    price_map = {}
-    source_map = {}
-    registered_at_map = {}
-    if not company_list_df.empty:
-        for _, row in company_list_df.iterrows():
-            nm = str(row.get("stock_name") or "").strip()
-            if not nm:
-                continue
-            ticker_map[nm] = clean_valid_ticker(str(row.get("ticker") or ""))
-            sector_map[nm] = str(row.get("sector") or "").strip()
-            price_val = _safe_to_float(row.get("price_krw"))
-            if price_val is not None and price_val > 0:
-                price_map[nm] = float(price_val)
-            source_map[nm] = str(row.get("source") or "").strip() or "manual"
-            created_text = str(row.get("created_at") or "").strip()
-            registered_at_map[nm] = created_text
-    overview_rows = []
-    for nm in sorted(holding_set | listed_set):
-        tags = []
-        if nm in holding_set:
-            tags.append("보유종목")
-        if nm in listed_set:
-            tags.append("추가리스트")
-        overview_rows.append(
-            {
-                "기업명": nm,
-                "티커": ticker_map.get(nm, ""),
-                "산업섹터": sector_map.get(nm, ""),
-                "현재주가(원화환산)": price_map.get(nm),
-                "등록일시": registered_at_map.get(nm, ""),
-                "구분": ", ".join(tags),
-                "리스트소스": source_map.get(nm, ""),
-            }
-        )
-    def _bulk_fill_company_meta(
-        target_rows: list[dict],
-        ai_provider: str,
-        ai_api_key: str,
-        ai_model: str,
-        force_refresh: bool = False,
-    ) -> tuple[int, int, list[str]]:
-        updated_count = 0
-        skipped_count = 0
-        unresolved: list[str] = []
-
-        for row in target_rows:
-            company_name = str(row.get("기업명") or "").strip()
-            row_ticker = clean_valid_ticker(str(row.get("티커") or ""))
-            row_sector = str(row.get("산업섹터") or "").strip()
-            if not company_name:
-                skipped_count += 1
-                continue
-
-            current_ticker = "" if force_refresh else row_ticker
-            current_sector = "" if force_refresh else row_sector
-            next_ticker = current_ticker
-            next_sector = current_sector
-            market_pref = market_pref_map.get(company_name, "")
-            if _company_name_has_hangul(company_name) and _looks_domestic_company_name_hint(company_name):
-                market_pref = "domestic"
-            builtin_hint = get_builtin_ticker_hint(company_name)
-            if builtin_hint:
-                market_pref = "domestic" if (builtin_hint.endswith(".KS") or builtin_hint.endswith(".KQ")) else "foreign"
-            if not market_pref:
-                if row_ticker:
-                    if not force_refresh:
-                        market_pref = "domestic" if (row_ticker.endswith(".KS") or row_ticker.endswith(".KQ")) else "foreign"
-                elif _company_name_has_hangul(company_name) and _looks_domestic_company_name_hint(company_name):
-                    market_pref = "domestic"
-
-            if (not force_refresh) and current_ticker:
-                suspicious = False
-                is_kr_ticker = current_ticker.endswith(".KS") or current_ticker.endswith(".KQ")
-                if market_pref == "domestic" and not is_kr_ticker:
-                    suspicious = True
-                elif market_pref == "foreign" and is_kr_ticker:
-                    suspicious = True
-                elif (
-                    _company_name_has_hangul(company_name)
-                    and not _looks_explicit_foreign_company_name(company_name)
-                    and not is_kr_ticker
-                ):
-                    suspicious = True
-                if suspicious:
-                    current_ticker = ""
-                    next_ticker = ""
-
-            if builtin_hint and _ticker_matches_market_preference(builtin_hint, market_pref):
-                next_ticker = builtin_hint
-
-            if not next_ticker:
-                auto_ticker, _ = resolve_ticker_auto_with_retry(
-                    company_name,
-                    use_ai=bool(ai_api_key),
-                    api_key=ai_api_key,
-                    model=ai_model,
-                    provider=ai_provider,
-                    market_preference=market_pref,
-                )
-                if auto_ticker:
-                    next_ticker = auto_ticker
-
-            if next_ticker and market_pref == "domestic" and not (
-                next_ticker.endswith(".KS") or next_ticker.endswith(".KQ")
-            ):
-                next_ticker = ""
-            if next_ticker and builtin_hint and (builtin_hint.endswith(".KS") or builtin_hint.endswith(".KQ")):
-                if not (next_ticker.endswith(".KS") or next_ticker.endswith(".KQ")):
-                    next_ticker = ""
-
-            if not next_sector:
-                auto_sector, _ = resolve_sector_auto(
-                    company_name,
-                    next_ticker,
-                    ai_api_key=ai_api_key,
-                    ai_model=ai_model,
-                    ai_provider=ai_provider,
-                )
-                if auto_sector:
-                    next_sector = auto_sector
-
-            changed = (next_ticker != current_ticker) or (next_sector != current_sector)
-            has_any_new = bool(next_ticker or next_sector)
-            if changed and has_any_new:
-                source_tag = "meta_refill_ai" if (force_refresh and ai_api_key) else "meta_refill"
-                if not force_refresh:
-                    source_tag = "auto_fill_ai" if ai_api_key else "auto_fill"
-                upsert_company_list_entry(
-                    company_name,
-                    next_ticker,
-                    sector=next_sector,
-                    source=source_tag,
-                )
-                updated_count += 1
+        saved_list_names = sorted(set(listed_names))
+        remove_options = ["선택안함"] + saved_list_names
+        if (
+            "analysis_remove_company_name" in st.session_state
+            and st.session_state["analysis_remove_company_name"] not in remove_options
+        ):
+            st.session_state["analysis_remove_company_name"] = "선택안함"
+        del_col1, del_col2 = st.columns([1.5, 0.8])
+        with del_col1:
+            remove_name = st.selectbox("추가기업 삭제", remove_options, key="analysis_remove_company_name")
+        with del_col2:
+            remove_btn = st.button("선택 삭제", key="analysis_remove_company_btn")
+        if remove_btn:
+            if remove_name == "선택안함":
+                st.warning("삭제할 기업을 선택해 주세요.")
             else:
-                skipped_count += 1
-                if (not next_ticker) or (not next_sector):
-                    unresolved.append(company_name)
-        return updated_count, skipped_count, unresolved
+                delete_company_list_entry(remove_name)
+                if (st.session_state.get("analysis_company_name_input") or "").strip() == remove_name:
+                    st.session_state["analysis_company_name_pending"] = ""
+                    st.session_state["analysis_ticker_pending"] = ""
+                st.success(f"{remove_name} 기업을 추가 리스트에서 삭제했습니다.")
+                st.rerun()
 
-    meta_btn_col1, meta_btn_col2, meta_btn_col3 = st.columns([1.1, 1.5, 1.1])
-    with meta_btn_col1:
-        auto_fill_missing_btn = st.button(
-            "빈 티커/산업섹터 일괄 채우기 (API+AI)",
-            key="analysis_fill_missing_company_meta_btn",
-        )
-    with meta_btn_col2:
-        reset_and_refill_btn = st.button(
-            "티커/산업섹터 전체 초기화 후 재탐색 (API+AI)",
-            key="analysis_reset_refill_company_meta_btn",
-        )
-    with meta_btn_col3:
-        refresh_price_btn = st.button(
-            "현재 주가 일괄 불러오기 + DB저장 (API+AI)",
-            key="analysis_fill_company_price_btn",
-        )
-
-    if auto_fill_missing_btn:
-        ai_provider, ai_api_key, ai_model = get_ai_settings_from_session("analysis")
-        targets = [row for row in overview_rows if not str(row.get("티커") or "").strip() or not str(row.get("산업섹터") or "").strip()]
-        if not targets:
-            st.info("이미 모든 기업에 티커/산업섹터 정보가 있습니다.")
-        else:
-            with st.spinner("빈 정보만 자동으로 찾는 중입니다..."):
-                updated_count, skipped_count, unresolved = _bulk_fill_company_meta(
-                    targets,
-                    ai_provider=ai_provider,
-                    ai_api_key=ai_api_key,
-                    ai_model=ai_model,
-                    force_refresh=False,
-                )
-
-            if updated_count > 0:
-                st.session_state["analysis_bulk_fill_notice"] = (
-                    f"일괄 채우기 완료: 업데이트 {updated_count}개, 유지/실패 {skipped_count}개"
-                )
-            elif skipped_count > 0:
-                st.session_state["analysis_bulk_fill_notice"] = "일괄 채우기 결과: 새로 업데이트된 항목이 없습니다."
-            if unresolved:
-                preview = ", ".join(unresolved[:8])
-                remain = len(unresolved) - min(8, len(unresolved))
-                tail = f" 외 {remain}개" if remain > 0 else ""
-                st.session_state["analysis_bulk_fill_warning"] = f"일부 항목은 여전히 빈 값입니다: {preview}{tail}"
-            st.rerun()
-
-    if reset_and_refill_btn:
-        ai_provider, ai_api_key, ai_model = get_ai_settings_from_session("analysis")
-        targets = [
-            {"기업명": str(row.get("기업명") or "").strip(), "티커": "", "산업섹터": ""}
-            for row in overview_rows
-            if str(row.get("기업명") or "").strip()
-        ]
-        if not targets:
-            st.info("재탐색할 기업이 없습니다.")
-        else:
-            cleared_count = clear_company_list_meta_all(source="manual_meta_reset")
-            with st.spinner("티커/산업섹터 전체 초기화 후 재탐색 중입니다..."):
-                updated_count, skipped_count, unresolved = _bulk_fill_company_meta(
-                    targets,
-                    ai_provider=ai_provider,
-                    ai_api_key=ai_api_key,
-                    ai_model=ai_model,
-                    force_refresh=True,
-                )
-            st.session_state["analysis_bulk_reset_notice"] = (
-                f"초기화+재탐색 완료: 초기화 {cleared_count}개, 업데이트 {updated_count}개, 유지/실패 {skipped_count}개"
+        st.markdown("##### 이미지로 관심종목 리스트 추가 (AI)")
+        st.caption("여기서 추가되는 항목은 보유현황이 아니라 기업 리스트(관심종목)만 업데이트됩니다.")
+        watch_uploader_key = f"analysis_watch_image_uploader_{st.session_state['analysis_watch_image_uploader_nonce']}"
+        watch_col1, watch_col2 = st.columns([1.35, 1.0])
+        with watch_col1:
+            watch_image = st.file_uploader(
+                "관심종목 이미지",
+                type=["png", "jpg", "jpeg", "webp"],
+                key=watch_uploader_key,
             )
-            if unresolved:
-                preview = ", ".join(unresolved[:8])
-                remain = len(unresolved) - min(8, len(unresolved))
-                tail = f" 외 {remain}개" if remain > 0 else ""
-                st.session_state["analysis_bulk_reset_warning"] = f"일부 항목은 여전히 미완성입니다: {preview}{tail}"
-            st.rerun()
-
-    if refresh_price_btn:
-        ai_provider, ai_api_key, ai_model = get_ai_settings_from_session("analysis")
-        targets = [row for row in overview_rows if str(row.get("기업명") or "").strip()]
-        if not targets:
-            st.info("주가를 갱신할 기업이 없습니다.")
-        else:
-            updated_count = 0
-            failed_details: list[str] = []
-            with st.spinner("기업 리스트 현재 주가를 일괄 불러오는 중입니다..."):
-                for row in targets:
-                    company_name = str(row.get("기업명") or "").strip()
-                    current_ticker = clean_valid_ticker(str(row.get("티커") or ""))
-                    if not company_name:
-                        continue
-
-                    ticker = current_ticker
-                    if not ticker:
-                        ticker, _ = resolve_ticker_auto_with_retry(
-                            company_name,
-                            use_ai=bool(ai_api_key),
-                            api_key=ai_api_key,
-                            model=ai_model,
-                            provider=ai_provider,
-                            market_preference=market_pref_map.get(company_name, ""),
-                        )
-                    if not ticker:
-                        failed_details.append(f"{company_name}(티커 없음)")
-                        continue
-
-                    price_krw, price_src = fetch_current_price_krw_from_ticker(ticker, date.today())
-                    if price_krw is None or float(price_krw) <= 0:
-                        fail_reason = (price_src or "주가 조회 실패").strip()
-                        failed_details.append(f"{company_name}({fail_reason})")
-                        continue
-
-                    upsert_company_list_entry(
-                        company_name,
-                        ticker=ticker,
-                        source=None,
-                        price_krw=float(price_krw),
-                        price_source=price_src or "api",
-                    )
-                    updated_count += 1
-
-            auto_save_suffix = ""
-            auto_save_warn = ""
-            if updated_count > 0:
-                try:
-                    target_date_text = str(st.session_state.get("editing_df_date", "") or "").strip()
-                    target_date = _safe_parse_date(target_date_text) or date.today()
-                    session_df = st.session_state.get("editing_df", pd.DataFrame())
-                    if isinstance(session_df, pd.DataFrame) and not session_df.empty:
-                        usd_rate, _ = get_usd_krw_rate_for_date(target_date)
-                        refreshed_company_df = load_company_list()
-                        price_exact, price_norm = build_company_price_krw_maps(refreshed_company_df)
-                        recalced_df = recalculate_portfolio_from_price_and_avg_buy(
-                            ensure_portfolio_columns(session_df.copy(), usd_rate, force_usd_rate=True),
-                            usd_rate,
-                            company_price_exact=price_exact,
-                            company_price_norm=price_norm,
-                        )
-                        sync_ok, sync_msg = save_snapshot(
-                            target_date,
-                            recalced_df,
-                            sync_to_github=True,
-                            sync_reason="price_refresh_auto_save",
-                        )
-                        st.session_state["editing_df"] = recalced_df
-                        st.session_state["editing_df_date"] = target_date.isoformat()
-                        if sync_msg:
-                            auto_save_suffix = f" / 스냅샷 저장·GitHub 동기화 {'완료' if sync_ok else '경고'}"
-                        else:
-                            auto_save_suffix = " / 스냅샷 자동 저장 완료"
-                    else:
-                        latest_date_text, latest_df = load_latest_snapshot()
-                        if latest_df is not None and not latest_df.empty:
-                            target_date2 = _safe_parse_date(latest_date_text) or date.today()
-                            sync_ok, sync_msg = sync_snapshot_to_github_excel(target_date2, latest_df)
-                            if sync_msg:
-                                auto_save_suffix = f" / GitHub 동기화 {'완료' if sync_ok else '경고'}"
-                except Exception as exc:
-                    auto_save_warn = f"주가 갱신 후 자동 저장 실패: {exc}"
-
-            if updated_count > 0:
-                st.session_state["analysis_bulk_price_notice"] = f"현재 주가 업데이트 완료: {updated_count}개{auto_save_suffix}"
-            else:
-                st.session_state["analysis_bulk_price_notice"] = "현재 주가를 새로 업데이트하지 못했습니다."
-            if auto_save_warn:
-                failed_details.append(auto_save_warn)
-            if failed_details:
-                preview = ", ".join(failed_details[:5])
-                remain = len(failed_details) - min(5, len(failed_details))
-                tail = f" 외 {remain}개" if remain > 0 else ""
-                st.session_state["analysis_bulk_price_warning"] = f"일부 실패: {preview}{tail}"
-            st.rerun()
-
-    if "analysis_bulk_fill_notice" in st.session_state:
-        st.success(st.session_state.pop("analysis_bulk_fill_notice"))
-    if "analysis_bulk_fill_warning" in st.session_state:
-        st.warning(st.session_state.pop("analysis_bulk_fill_warning"))
-    if "analysis_bulk_price_notice" in st.session_state:
-        st.success(st.session_state.pop("analysis_bulk_price_notice"))
-    if "analysis_bulk_price_warning" in st.session_state:
-        st.warning(st.session_state.pop("analysis_bulk_price_warning"))
-    if "analysis_bulk_reset_notice" in st.session_state:
-        st.success(st.session_state.pop("analysis_bulk_reset_notice"))
-    if "analysis_bulk_reset_warning" in st.session_state:
-        st.warning(st.session_state.pop("analysis_bulk_reset_warning"))
-    if "analysis_bulk_selected_reset_notice" in st.session_state:
-        st.success(st.session_state.pop("analysis_bulk_selected_reset_notice"))
-    if "analysis_bulk_selected_reset_warning" in st.session_state:
-        st.warning(st.session_state.pop("analysis_bulk_selected_reset_warning"))
-    if "analysis_bulk_selected_save_notice" in st.session_state:
-        st.success(st.session_state.pop("analysis_bulk_selected_save_notice"))
-    if "analysis_bulk_selected_save_warning" in st.session_state:
-        st.warning(st.session_state.pop("analysis_bulk_selected_save_warning"))
-    if "analysis_bulk_selected_delete_notice" in st.session_state:
-        st.success(st.session_state.pop("analysis_bulk_selected_delete_notice"))
-    if "analysis_bulk_selected_delete_warning" in st.session_state:
-        st.warning(st.session_state.pop("analysis_bulk_selected_delete_warning"))
-
-    if overview_rows:
-        st.caption("목록에서 기업 행을 선택하면 아래 기업명/티커 입력이 자동 선택됩니다.")
-        search_keyword = st.text_input(
-            "기업 종합검색",
-            key="analysis_overview_search_keyword",
-            placeholder="기업명/티커/산업섹터/구분/소스/등록일시/주가 포함 검색",
-        )
-        overview_df = pd.DataFrame(overview_rows)
-        overview_df["현재주가(원화환산)"] = pd.to_numeric(overview_df["현재주가(원화환산)"], errors="coerce")
-        overview_df["등록일시"] = pd.to_datetime(overview_df.get("등록일시"), errors="coerce")
-        overview_df = overview_df.sort_values(
-            ["등록일시", "기업명"],
-            ascending=[False, True],
-            na_position="last",
-        ).reset_index(drop=True)
-        search_text = str(search_keyword or "").strip()
-        if search_text:
-            needle = search_text.casefold()
-            mask = pd.Series(False, index=overview_df.index)
-            for col in ["기업명", "티커", "산업섹터", "구분", "리스트소스", "등록일시", "현재주가(원화환산)"]:
-                series_text = overview_df[col].astype(str).str.casefold()
-                mask = mask | series_text.str.contains(re.escape(needle), regex=True, na=False)
-            overview_view_df = overview_df[mask].copy()
-            st.caption(f"검색 결과: {len(overview_view_df):,} / 전체 {len(overview_df):,}")
-        else:
-            overview_view_df = overview_df.copy()
-        current_input_name = (st.session_state.get("analysis_company_name_input") or "").strip()
-        current_input_ticker = clean_valid_ticker(st.session_state.get("analysis_ticker_input") or "")
-        selected_rows = []
-        # 기업 리스트 표는 화면 길이 과확장을 막기 위해 고정 높이 스크롤을 사용한다.
-        overview_height = 560
-        try:
-            table_event = st.dataframe(
-                overview_view_df,
-                height=overview_height,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "현재주가(원화환산)": st.column_config.NumberColumn("현재주가(원화환산)", format="localized"),
-                    "등록일시": st.column_config.DatetimeColumn("등록일시", format="YYYY-MM-DD HH:mm:ss"),
-                },
-                on_select="rerun",
-                selection_mode="multi-row",
-                key="analysis_company_overview_table",
+        with watch_col2:
+            st.checkbox(
+                "티커/산업섹터 자동 보강",
+                key="analysis_watch_image_enrich_meta",
+                help="이미지에서 빈 값이면 API/AI로 티커와 섹터를 추가 탐색합니다.",
             )
-            try:
-                selected_rows = list(table_event.selection.rows)
-            except Exception:
-                selected_rows = []
-        except TypeError:
-            st.dataframe(overview_view_df, height=overview_height, use_container_width=True, hide_index=True)
-
-        selected_names = []
-        if selected_rows:
-            for idx in selected_rows:
-                try:
-                    row_idx = int(idx)
-                except Exception:
-                    continue
-                if 0 <= row_idx < len(overview_view_df):
-                    nm = str(overview_view_df.iloc[row_idx].get("기업명") or "").strip()
-                    if nm:
-                        selected_names.append(nm)
-        selected_names = list(dict.fromkeys(selected_names))
-        st.session_state["analysis_selected_overview_names"] = selected_names
-
-        sel_col1, sel_col2, sel_col3, sel_col4 = st.columns([1.1, 1.0, 0.95, 1.45])
-        with sel_col1:
-            reset_selected_btn = st.button(
-                "선택 항목 초기화 후 재탐색 (API+AI)",
-                key="analysis_reset_refill_selected_company_meta_btn",
+            watch_import_btn = st.button(
+                "이미지로 관심종목 추가",
+                key="analysis_watch_image_import_btn",
+                type="primary",
             )
-        with sel_col2:
-            save_selected_btn = st.button(
-                "선택 항목 수동 저장",
-                key="analysis_save_selected_company_meta_btn",
-            )
-        with sel_col3:
-            delete_selected_btn = st.button(
-                "선택 관심목록 삭제",
-                key="analysis_delete_selected_company_list_btn",
-            )
-        with sel_col4:
-            st.caption(f"현재 선택: {len(selected_names):,}개")
 
-        if reset_selected_btn:
-            targets = [{"기업명": nm, "티커": "", "산업섹터": ""} for nm in selected_names]
-            if not targets:
-                st.warning("먼저 표에서 기업을 1개 이상 체크해 주세요.")
+        if watch_image is not None:
+            st.image(watch_image, caption="업로드된 관심종목 이미지", use_container_width=True)
+
+        if watch_import_btn:
+            if watch_image is None:
+                st.warning("먼저 이미지를 업로드해 주세요.")
             else:
                 ai_provider, ai_api_key, ai_model = get_ai_settings_from_session("analysis")
-                cleared_count = clear_company_list_meta_by_names(
-                    selected_names,
-                    source="manual_meta_reset_selected",
+                parsed_rows, parse_err = extract_company_watchlist_from_image_with_ai(
+                    image_bytes=watch_image.getvalue(),
+                    mime_type=str(getattr(watch_image, "type", "") or "image/png"),
+                    provider=ai_provider,
+                    api_key=ai_api_key,
+                    model=ai_model,
                 )
-                with st.spinner("선택 기업 티커/산업섹터 초기화 후 재탐색 중입니다..."):
+                if parse_err:
+                    st.error(parse_err)
+                elif not parsed_rows:
+                    st.warning("이미지에서 기업 목록을 찾지 못했습니다. 더 선명한 표/목록 이미지를 사용해 주세요.")
+                else:
+                    enrich_meta = bool(st.session_state.get("analysis_watch_image_enrich_meta", True))
+                    inserted_count = 0
+                    unresolved = []
+                    first_added_name = ""
+                    with st.spinner("관심종목 리스트에 반영 중입니다..."):
+                        for item in parsed_rows:
+                            if not isinstance(item, dict):
+                                continue
+                            stock_name = str(item.get("stock_name") or "").strip()
+                            if not stock_name:
+                                continue
+                            ticker = clean_valid_ticker(str(item.get("ticker") or ""))
+                            sector = str(item.get("sector") or "").strip()
+                            market_pref = market_pref_map.get(stock_name, "")
+
+                            if enrich_meta and not ticker:
+                                auto_ticker, _ = resolve_ticker_auto_with_retry(
+                                    stock_name,
+                                    use_ai=bool(ai_api_key),
+                                    api_key=ai_api_key,
+                                    model=ai_model,
+                                    provider=ai_provider,
+                                    market_preference=market_pref,
+                                )
+                                if auto_ticker:
+                                    ticker = auto_ticker
+
+                            if enrich_meta and not sector:
+                                auto_sector, _ = resolve_sector_auto(
+                                    stock_name,
+                                    ticker,
+                                    ai_api_key=ai_api_key,
+                                    ai_model=ai_model,
+                                    ai_provider=ai_provider,
+                                )
+                                if auto_sector:
+                                    sector = auto_sector
+                            if not sector:
+                                sector = infer_sector_from_name_heuristic(stock_name, ticker)
+
+                            upsert_company_list_entry(stock_name, ticker, sector=sector, source="image_watch_ai")
+                            inserted_count += 1
+                            if not first_added_name:
+                                first_added_name = stock_name
+                            if not ticker or not sector:
+                                unresolved.append(stock_name)
+
+                    st.session_state["analysis_watch_image_uploader_nonce"] += 1
+                    if first_added_name:
+                        st.session_state["analysis_company_name_pending"] = first_added_name
+                    unresolved_count = len(set(unresolved))
+                    msg = f"이미지 관심종목 추가 완료: {inserted_count}개 반영"
+                    if unresolved_count > 0:
+                        msg += f" / 티커·섹터 일부 미완성 {unresolved_count}개"
+                    st.session_state["analysis_watch_image_notice"] = msg
+                    st.rerun()
+
+        if "analysis_watch_image_notice" in st.session_state:
+            st.success(st.session_state.pop("analysis_watch_image_notice"))
+
+        holding_set = set(stock_names)
+        listed_set = set(listed_names)
+        ticker_map = {}
+        sector_map = {}
+        price_map = {}
+        source_map = {}
+        registered_at_map = {}
+        if not company_list_df.empty:
+            for _, row in company_list_df.iterrows():
+                nm = str(row.get("stock_name") or "").strip()
+                if not nm:
+                    continue
+                ticker_map[nm] = clean_valid_ticker(str(row.get("ticker") or ""))
+                sector_map[nm] = str(row.get("sector") or "").strip()
+                price_val = _safe_to_float(row.get("price_krw"))
+                if price_val is not None and price_val > 0:
+                    price_map[nm] = float(price_val)
+                source_map[nm] = str(row.get("source") or "").strip() or "manual"
+                created_text = str(row.get("created_at") or "").strip()
+                registered_at_map[nm] = created_text
+        overview_rows = []
+        for nm in sorted(holding_set | listed_set):
+            tags = []
+            if nm in holding_set:
+                tags.append("보유종목")
+            if nm in listed_set:
+                tags.append("추가리스트")
+            overview_rows.append(
+                {
+                    "기업명": nm,
+                    "티커": ticker_map.get(nm, ""),
+                    "산업섹터": sector_map.get(nm, ""),
+                    "현재주가(원화환산)": price_map.get(nm),
+                    "등록일시": registered_at_map.get(nm, ""),
+                    "구분": ", ".join(tags),
+                    "리스트소스": source_map.get(nm, ""),
+                }
+            )
+        def _bulk_fill_company_meta(
+            target_rows: list[dict],
+            ai_provider: str,
+            ai_api_key: str,
+            ai_model: str,
+            force_refresh: bool = False,
+        ) -> tuple[int, int, list[str]]:
+            updated_count = 0
+            skipped_count = 0
+            unresolved: list[str] = []
+
+            for row in target_rows:
+                company_name = str(row.get("기업명") or "").strip()
+                row_ticker = clean_valid_ticker(str(row.get("티커") or ""))
+                row_sector = str(row.get("산업섹터") or "").strip()
+                if not company_name:
+                    skipped_count += 1
+                    continue
+
+                current_ticker = "" if force_refresh else row_ticker
+                current_sector = "" if force_refresh else row_sector
+                next_ticker = current_ticker
+                next_sector = current_sector
+                market_pref = market_pref_map.get(company_name, "")
+                if _company_name_has_hangul(company_name) and _looks_domestic_company_name_hint(company_name):
+                    market_pref = "domestic"
+                builtin_hint = get_builtin_ticker_hint(company_name)
+                if builtin_hint:
+                    market_pref = "domestic" if (builtin_hint.endswith(".KS") or builtin_hint.endswith(".KQ")) else "foreign"
+                if not market_pref:
+                    if row_ticker:
+                        if not force_refresh:
+                            market_pref = "domestic" if (row_ticker.endswith(".KS") or row_ticker.endswith(".KQ")) else "foreign"
+                    elif _company_name_has_hangul(company_name) and _looks_domestic_company_name_hint(company_name):
+                        market_pref = "domestic"
+
+                if (not force_refresh) and current_ticker:
+                    suspicious = False
+                    is_kr_ticker = current_ticker.endswith(".KS") or current_ticker.endswith(".KQ")
+                    if market_pref == "domestic" and not is_kr_ticker:
+                        suspicious = True
+                    elif market_pref == "foreign" and is_kr_ticker:
+                        suspicious = True
+                    elif (
+                        _company_name_has_hangul(company_name)
+                        and not _looks_explicit_foreign_company_name(company_name)
+                        and not is_kr_ticker
+                    ):
+                        suspicious = True
+                    if suspicious:
+                        current_ticker = ""
+                        next_ticker = ""
+
+                if builtin_hint and _ticker_matches_market_preference(builtin_hint, market_pref):
+                    next_ticker = builtin_hint
+
+                if not next_ticker:
+                    auto_ticker, _ = resolve_ticker_auto_with_retry(
+                        company_name,
+                        use_ai=bool(ai_api_key),
+                        api_key=ai_api_key,
+                        model=ai_model,
+                        provider=ai_provider,
+                        market_preference=market_pref,
+                    )
+                    if auto_ticker:
+                        next_ticker = auto_ticker
+
+                if next_ticker and market_pref == "domestic" and not (
+                    next_ticker.endswith(".KS") or next_ticker.endswith(".KQ")
+                ):
+                    next_ticker = ""
+                if next_ticker and builtin_hint and (builtin_hint.endswith(".KS") or builtin_hint.endswith(".KQ")):
+                    if not (next_ticker.endswith(".KS") or next_ticker.endswith(".KQ")):
+                        next_ticker = ""
+
+                if not next_sector:
+                    auto_sector, _ = resolve_sector_auto(
+                        company_name,
+                        next_ticker,
+                        ai_api_key=ai_api_key,
+                        ai_model=ai_model,
+                        ai_provider=ai_provider,
+                    )
+                    if auto_sector:
+                        next_sector = auto_sector
+
+                changed = (next_ticker != current_ticker) or (next_sector != current_sector)
+                has_any_new = bool(next_ticker or next_sector)
+                if changed and has_any_new:
+                    source_tag = "meta_refill_ai" if (force_refresh and ai_api_key) else "meta_refill"
+                    if not force_refresh:
+                        source_tag = "auto_fill_ai" if ai_api_key else "auto_fill"
+                    upsert_company_list_entry(
+                        company_name,
+                        next_ticker,
+                        sector=next_sector,
+                        source=source_tag,
+                    )
+                    updated_count += 1
+                else:
+                    skipped_count += 1
+                    if (not next_ticker) or (not next_sector):
+                        unresolved.append(company_name)
+            return updated_count, skipped_count, unresolved
+
+        meta_btn_col1, meta_btn_col2, meta_btn_col3 = st.columns([1.1, 1.5, 1.1])
+        with meta_btn_col1:
+            auto_fill_missing_btn = st.button(
+                "빈 티커/산업섹터 일괄 채우기 (API+AI)",
+                key="analysis_fill_missing_company_meta_btn",
+            )
+        with meta_btn_col2:
+            reset_and_refill_btn = st.button(
+                "티커/산업섹터 전체 초기화 후 재탐색 (API+AI)",
+                key="analysis_reset_refill_company_meta_btn",
+            )
+        with meta_btn_col3:
+            refresh_price_btn = st.button(
+                "현재 주가 일괄 불러오기 + DB저장 (API+AI)",
+                key="analysis_fill_company_price_btn",
+            )
+
+        if auto_fill_missing_btn:
+            ai_provider, ai_api_key, ai_model = get_ai_settings_from_session("analysis")
+            targets = [row for row in overview_rows if not str(row.get("티커") or "").strip() or not str(row.get("산업섹터") or "").strip()]
+            if not targets:
+                st.info("이미 모든 기업에 티커/산업섹터 정보가 있습니다.")
+            else:
+                with st.spinner("빈 정보만 자동으로 찾는 중입니다..."):
+                    updated_count, skipped_count, unresolved = _bulk_fill_company_meta(
+                        targets,
+                        ai_provider=ai_provider,
+                        ai_api_key=ai_api_key,
+                        ai_model=ai_model,
+                        force_refresh=False,
+                    )
+
+                if updated_count > 0:
+                    st.session_state["analysis_bulk_fill_notice"] = (
+                        f"일괄 채우기 완료: 업데이트 {updated_count}개, 유지/실패 {skipped_count}개"
+                    )
+                elif skipped_count > 0:
+                    st.session_state["analysis_bulk_fill_notice"] = "일괄 채우기 결과: 새로 업데이트된 항목이 없습니다."
+                if unresolved:
+                    preview = ", ".join(unresolved[:8])
+                    remain = len(unresolved) - min(8, len(unresolved))
+                    tail = f" 외 {remain}개" if remain > 0 else ""
+                    st.session_state["analysis_bulk_fill_warning"] = f"일부 항목은 여전히 빈 값입니다: {preview}{tail}"
+                st.rerun()
+
+        if reset_and_refill_btn:
+            ai_provider, ai_api_key, ai_model = get_ai_settings_from_session("analysis")
+            targets = [
+                {"기업명": str(row.get("기업명") or "").strip(), "티커": "", "산업섹터": ""}
+                for row in overview_rows
+                if str(row.get("기업명") or "").strip()
+            ]
+            if not targets:
+                st.info("재탐색할 기업이 없습니다.")
+            else:
+                cleared_count = clear_company_list_meta_all(source="manual_meta_reset")
+                with st.spinner("티커/산업섹터 전체 초기화 후 재탐색 중입니다..."):
                     updated_count, skipped_count, unresolved = _bulk_fill_company_meta(
                         targets,
                         ai_provider=ai_provider,
@@ -10891,178 +10696,412 @@ def render_company_analysis_tab(current_df: pd.DataFrame) -> None:
                         ai_model=ai_model,
                         force_refresh=True,
                     )
-                st.session_state["analysis_bulk_selected_reset_notice"] = (
-                    f"선택 초기화+재탐색 완료: 초기화 {cleared_count}개, 업데이트 {updated_count}개, 유지/실패 {skipped_count}개"
+                st.session_state["analysis_bulk_reset_notice"] = (
+                    f"초기화+재탐색 완료: 초기화 {cleared_count}개, 업데이트 {updated_count}개, 유지/실패 {skipped_count}개"
                 )
                 if unresolved:
                     preview = ", ".join(unresolved[:8])
                     remain = len(unresolved) - min(8, len(unresolved))
                     tail = f" 외 {remain}개" if remain > 0 else ""
-                    st.session_state["analysis_bulk_selected_reset_warning"] = (
-                        f"선택 항목 중 일부는 여전히 미완성입니다: {preview}{tail}"
-                    )
+                    st.session_state["analysis_bulk_reset_warning"] = f"일부 항목은 여전히 미완성입니다: {preview}{tail}"
                 st.rerun()
 
-        if save_selected_btn:
-            if not selected_rows:
-                st.warning("먼저 표에서 기업을 1개 이상 체크해 주세요.")
+        if refresh_price_btn:
+            ai_provider, ai_api_key, ai_model = get_ai_settings_from_session("analysis")
+            targets = [row for row in overview_rows if str(row.get("기업명") or "").strip()]
+            if not targets:
+                st.info("주가를 갱신할 기업이 없습니다.")
             else:
-                saved_count = 0
-                skipped: list[str] = []
+                updated_count = 0
+                failed_details: list[str] = []
+                with st.spinner("기업 리스트 현재 주가를 일괄 불러오는 중입니다..."):
+                    for row in targets:
+                        company_name = str(row.get("기업명") or "").strip()
+                        current_ticker = clean_valid_ticker(str(row.get("티커") or ""))
+                        if not company_name:
+                            continue
+
+                        ticker = current_ticker
+                        if not ticker:
+                            ticker, _ = resolve_ticker_auto_with_retry(
+                                company_name,
+                                use_ai=bool(ai_api_key),
+                                api_key=ai_api_key,
+                                model=ai_model,
+                                provider=ai_provider,
+                                market_preference=market_pref_map.get(company_name, ""),
+                            )
+                        if not ticker:
+                            failed_details.append(f"{company_name}(티커 없음)")
+                            continue
+
+                        price_krw, price_src = fetch_current_price_krw_from_ticker(ticker, date.today())
+                        if price_krw is None or float(price_krw) <= 0:
+                            fail_reason = (price_src or "주가 조회 실패").strip()
+                            failed_details.append(f"{company_name}({fail_reason})")
+                            continue
+
+                        upsert_company_list_entry(
+                            company_name,
+                            ticker=ticker,
+                            source=None,
+                            price_krw=float(price_krw),
+                            price_source=price_src or "api",
+                        )
+                        updated_count += 1
+
+                auto_save_suffix = ""
+                auto_save_warn = ""
+                if updated_count > 0:
+                    try:
+                        target_date_text = str(st.session_state.get("editing_df_date", "") or "").strip()
+                        target_date = _safe_parse_date(target_date_text) or date.today()
+                        session_df = st.session_state.get("editing_df", pd.DataFrame())
+                        if isinstance(session_df, pd.DataFrame) and not session_df.empty:
+                            usd_rate, _ = get_usd_krw_rate_for_date(target_date)
+                            refreshed_company_df = load_company_list()
+                            price_exact, price_norm = build_company_price_krw_maps(refreshed_company_df)
+                            recalced_df = recalculate_portfolio_from_price_and_avg_buy(
+                                ensure_portfolio_columns(session_df.copy(), usd_rate, force_usd_rate=True),
+                                usd_rate,
+                                company_price_exact=price_exact,
+                                company_price_norm=price_norm,
+                            )
+                            sync_ok, sync_msg = save_snapshot(
+                                target_date,
+                                recalced_df,
+                                sync_to_github=True,
+                                sync_reason="price_refresh_auto_save",
+                            )
+                            st.session_state["editing_df"] = recalced_df
+                            st.session_state["editing_df_date"] = target_date.isoformat()
+                            if sync_msg:
+                                auto_save_suffix = f" / 스냅샷 저장·GitHub 동기화 {'완료' if sync_ok else '경고'}"
+                            else:
+                                auto_save_suffix = " / 스냅샷 자동 저장 완료"
+                        else:
+                            latest_date_text, latest_df = load_latest_snapshot()
+                            if latest_df is not None and not latest_df.empty:
+                                target_date2 = _safe_parse_date(latest_date_text) or date.today()
+                                sync_ok, sync_msg = sync_snapshot_to_github_excel(target_date2, latest_df)
+                                if sync_msg:
+                                    auto_save_suffix = f" / GitHub 동기화 {'완료' if sync_ok else '경고'}"
+                    except Exception as exc:
+                        auto_save_warn = f"주가 갱신 후 자동 저장 실패: {exc}"
+
+                if updated_count > 0:
+                    st.session_state["analysis_bulk_price_notice"] = f"현재 주가 업데이트 완료: {updated_count}개{auto_save_suffix}"
+                else:
+                    st.session_state["analysis_bulk_price_notice"] = "현재 주가를 새로 업데이트하지 못했습니다."
+                if auto_save_warn:
+                    failed_details.append(auto_save_warn)
+                if failed_details:
+                    preview = ", ".join(failed_details[:5])
+                    remain = len(failed_details) - min(5, len(failed_details))
+                    tail = f" 외 {remain}개" if remain > 0 else ""
+                    st.session_state["analysis_bulk_price_warning"] = f"일부 실패: {preview}{tail}"
+                st.rerun()
+
+        if "analysis_bulk_fill_notice" in st.session_state:
+            st.success(st.session_state.pop("analysis_bulk_fill_notice"))
+        if "analysis_bulk_fill_warning" in st.session_state:
+            st.warning(st.session_state.pop("analysis_bulk_fill_warning"))
+        if "analysis_bulk_price_notice" in st.session_state:
+            st.success(st.session_state.pop("analysis_bulk_price_notice"))
+        if "analysis_bulk_price_warning" in st.session_state:
+            st.warning(st.session_state.pop("analysis_bulk_price_warning"))
+        if "analysis_bulk_reset_notice" in st.session_state:
+            st.success(st.session_state.pop("analysis_bulk_reset_notice"))
+        if "analysis_bulk_reset_warning" in st.session_state:
+            st.warning(st.session_state.pop("analysis_bulk_reset_warning"))
+        if "analysis_bulk_selected_reset_notice" in st.session_state:
+            st.success(st.session_state.pop("analysis_bulk_selected_reset_notice"))
+        if "analysis_bulk_selected_reset_warning" in st.session_state:
+            st.warning(st.session_state.pop("analysis_bulk_selected_reset_warning"))
+        if "analysis_bulk_selected_save_notice" in st.session_state:
+            st.success(st.session_state.pop("analysis_bulk_selected_save_notice"))
+        if "analysis_bulk_selected_save_warning" in st.session_state:
+            st.warning(st.session_state.pop("analysis_bulk_selected_save_warning"))
+        if "analysis_bulk_selected_delete_notice" in st.session_state:
+            st.success(st.session_state.pop("analysis_bulk_selected_delete_notice"))
+        if "analysis_bulk_selected_delete_warning" in st.session_state:
+            st.warning(st.session_state.pop("analysis_bulk_selected_delete_warning"))
+
+        if overview_rows:
+            st.caption("목록에서 기업 행을 선택하면 아래 기업명/티커 입력이 자동 선택됩니다.")
+            search_keyword = st.text_input(
+                "기업 종합검색",
+                key="analysis_overview_search_keyword",
+                placeholder="기업명/티커/산업섹터/구분/소스/등록일시/주가 포함 검색",
+            )
+            overview_df = pd.DataFrame(overview_rows)
+            overview_df["현재주가(원화환산)"] = pd.to_numeric(overview_df["현재주가(원화환산)"], errors="coerce")
+            overview_df["등록일시"] = pd.to_datetime(overview_df.get("등록일시"), errors="coerce")
+            overview_df = overview_df.sort_values(
+                ["등록일시", "기업명"],
+                ascending=[False, True],
+                na_position="last",
+            ).reset_index(drop=True)
+            search_text = str(search_keyword or "").strip()
+            if search_text:
+                needle = search_text.casefold()
+                mask = pd.Series(False, index=overview_df.index)
+                for col in ["기업명", "티커", "산업섹터", "구분", "리스트소스", "등록일시", "현재주가(원화환산)"]:
+                    series_text = overview_df[col].astype(str).str.casefold()
+                    mask = mask | series_text.str.contains(re.escape(needle), regex=True, na=False)
+                overview_view_df = overview_df[mask].copy()
+                st.caption(f"검색 결과: {len(overview_view_df):,} / 전체 {len(overview_df):,}")
+            else:
+                overview_view_df = overview_df.copy()
+            current_input_name = (st.session_state.get("analysis_company_name_input") or "").strip()
+            current_input_ticker = clean_valid_ticker(st.session_state.get("analysis_ticker_input") or "")
+            selected_rows = []
+            # 기업 리스트 표는 화면 길이 과확장을 막기 위해 고정 높이 스크롤을 사용한다.
+            overview_height = 560
+            try:
+                table_event = st.dataframe(
+                    overview_view_df,
+                    height=overview_height,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "현재주가(원화환산)": st.column_config.NumberColumn("현재주가(원화환산)", format="localized"),
+                        "등록일시": st.column_config.DatetimeColumn("등록일시", format="YYYY-MM-DD HH:mm:ss"),
+                    },
+                    on_select="rerun",
+                    selection_mode="multi-row",
+                    key="analysis_company_overview_table",
+                )
+                try:
+                    selected_rows = list(table_event.selection.rows)
+                except Exception:
+                    selected_rows = []
+            except TypeError:
+                st.dataframe(overview_view_df, height=overview_height, use_container_width=True, hide_index=True)
+
+            selected_names = []
+            if selected_rows:
                 for idx in selected_rows:
                     try:
                         row_idx = int(idx)
                     except Exception:
                         continue
-                    if not (0 <= row_idx < len(overview_view_df)):
-                        continue
-                    row_view = overview_view_df.iloc[row_idx]
-                    company_name = str(row_view.get("기업명") or "").strip()
-                    ticker = clean_valid_ticker(str(row_view.get("티커") or ""))
-                    sector = str(row_view.get("산업섹터") or "").strip()
-                    if not company_name:
-                        continue
-                    if not ticker and not sector:
-                        skipped.append(company_name)
-                        continue
-                    upsert_company_list_entry(
-                        company_name,
-                        ticker=ticker,
-                        sector=sector,
-                        source="manual_save_selected",
-                    )
-                    saved_count += 1
-                st.session_state["analysis_bulk_selected_save_notice"] = (
-                    f"선택 항목 저장 완료: {saved_count}개"
+                    if 0 <= row_idx < len(overview_view_df):
+                        nm = str(overview_view_df.iloc[row_idx].get("기업명") or "").strip()
+                        if nm:
+                            selected_names.append(nm)
+            selected_names = list(dict.fromkeys(selected_names))
+            st.session_state["analysis_selected_overview_names"] = selected_names
+
+            sel_col1, sel_col2, sel_col3, sel_col4 = st.columns([1.1, 1.0, 0.95, 1.45])
+            with sel_col1:
+                reset_selected_btn = st.button(
+                    "선택 항목 초기화 후 재탐색 (API+AI)",
+                    key="analysis_reset_refill_selected_company_meta_btn",
                 )
-                if skipped:
-                    preview = ", ".join(skipped[:6])
-                    remain = len(skipped) - min(6, len(skipped))
-                    tail = f" 외 {remain}개" if remain > 0 else ""
-                    st.session_state["analysis_bulk_selected_save_warning"] = (
-                        f"티커/섹터가 비어 저장하지 못한 항목: {preview}{tail}"
-                    )
-                st.rerun()
+            with sel_col2:
+                save_selected_btn = st.button(
+                    "선택 항목 수동 저장",
+                    key="analysis_save_selected_company_meta_btn",
+                )
+            with sel_col3:
+                delete_selected_btn = st.button(
+                    "선택 관심목록 삭제",
+                    key="analysis_delete_selected_company_list_btn",
+                )
+            with sel_col4:
+                st.caption(f"현재 선택: {len(selected_names):,}개")
 
-        if delete_selected_btn:
-            if not selected_names:
-                st.warning("먼저 표에서 기업을 1개 이상 체크해 주세요.")
-            else:
-                deleted_count = 0
-                skipped_non_watch: list[str] = []
-                for name in selected_names:
-                    nm = str(name or "").strip()
-                    if not nm:
-                        continue
-                    if nm not in listed_set:
-                        skipped_non_watch.append(nm)
-                        continue
-                    delete_company_list_entry(nm)
-                    deleted_count += 1
-                    if (st.session_state.get("analysis_company_name_input") or "").strip() == nm:
-                        st.session_state["analysis_company_name_pending"] = ""
-                        st.session_state["analysis_ticker_pending"] = ""
-
-                if deleted_count > 0:
-                    st.session_state["analysis_bulk_selected_delete_notice"] = (
-                        f"선택 관심목록 삭제 완료: {deleted_count}개"
+            if reset_selected_btn:
+                targets = [{"기업명": nm, "티커": "", "산업섹터": ""} for nm in selected_names]
+                if not targets:
+                    st.warning("먼저 표에서 기업을 1개 이상 체크해 주세요.")
+                else:
+                    ai_provider, ai_api_key, ai_model = get_ai_settings_from_session("analysis")
+                    cleared_count = clear_company_list_meta_by_names(
+                        selected_names,
+                        source="manual_meta_reset_selected",
                     )
-                if skipped_non_watch:
-                    preview = ", ".join(skipped_non_watch[:6])
-                    remain = len(skipped_non_watch) - min(6, len(skipped_non_watch))
-                    tail = f" 외 {remain}개" if remain > 0 else ""
-                    st.session_state["analysis_bulk_selected_delete_warning"] = (
-                        f"보유종목만 존재해 관심목록 삭제를 건너뜀: {preview}{tail}"
+                    with st.spinner("선택 기업 티커/산업섹터 초기화 후 재탐색 중입니다..."):
+                        updated_count, skipped_count, unresolved = _bulk_fill_company_meta(
+                            targets,
+                            ai_provider=ai_provider,
+                            ai_api_key=ai_api_key,
+                            ai_model=ai_model,
+                            force_refresh=True,
+                        )
+                    st.session_state["analysis_bulk_selected_reset_notice"] = (
+                        f"선택 초기화+재탐색 완료: 초기화 {cleared_count}개, 업데이트 {updated_count}개, 유지/실패 {skipped_count}개"
                     )
-                if deleted_count == 0 and not skipped_non_watch:
-                    st.session_state["analysis_bulk_selected_delete_warning"] = "삭제 가능한 관심목록 항목이 없습니다."
-                st.rerun()
-
-        if selected_rows:
-            row_idx = int(selected_rows[0])
-            if 0 <= row_idx < len(overview_view_df):
-                picked_name = str(overview_view_df.iloc[row_idx].get("기업명") or "").strip()
-                picked_ticker = clean_valid_ticker(str(overview_view_df.iloc[row_idx].get("티커") or ""))
-                picked_sector = str(overview_view_df.iloc[row_idx].get("산업섹터") or "").strip()
-                prev_selected_name = _sanitize_widget_text(st.session_state.get("analysis_selected_overview_company"), "")
-                if picked_name and picked_name != prev_selected_name:
-                    st.session_state["analysis_selected_overview_company"] = picked_name
-                    st.session_state["analysis_selected_overview_ticker_input"] = picked_ticker
-                    st.session_state["analysis_selected_overview_sector_input"] = picked_sector
-                need_apply = False
-                if picked_name and picked_name != current_input_name:
-                    st.session_state["analysis_company_name_pending"] = picked_name
-                    need_apply = True
-                if picked_ticker and picked_ticker != current_input_ticker:
-                    st.session_state["analysis_ticker_pending"] = picked_ticker
-                    need_apply = True
-                if need_apply:
-                    st.session_state["analysis_company_hint"] = "직접입력"
+                    if unresolved:
+                        preview = ", ".join(unresolved[:8])
+                        remain = len(unresolved) - min(8, len(unresolved))
+                        tail = f" 외 {remain}개" if remain > 0 else ""
+                        st.session_state["analysis_bulk_selected_reset_warning"] = (
+                            f"선택 항목 중 일부는 여전히 미완성입니다: {preview}{tail}"
+                        )
                     st.rerun()
 
-    selected_company_for_edit = _sanitize_widget_text(st.session_state.get("analysis_selected_overview_company"), "")
-    if selected_company_for_edit:
-        st.markdown("##### 선택 기업 티커/섹터 수정")
-        edit_col1, edit_col2, edit_col3, edit_col4, edit_col5 = st.columns([1.0, 1.0, 1.1, 0.75, 0.85])
-        with edit_col1:
-            st.caption(f"선택 기업: **{selected_company_for_edit}**")
-        with edit_col2:
-            st.text_input(
-                "수정 티커",
-                key="analysis_selected_overview_ticker_input",
-                placeholder="예: NOV / 005930.KS",
-            )
-        with edit_col3:
-            st.text_input(
-                "수정 산업섹터(선택)",
-                key="analysis_selected_overview_sector_input",
-                placeholder="예: Energy / 반도체",
-            )
-        with edit_col4:
-            save_selected_meta_btn = st.button("선택값 저장", key="analysis_save_selected_meta_btn")
-        with edit_col5:
-            clear_selected_ticker_btn = st.button("티커 비우기", key="analysis_clear_selected_ticker_btn")
+            if save_selected_btn:
+                if not selected_rows:
+                    st.warning("먼저 표에서 기업을 1개 이상 체크해 주세요.")
+                else:
+                    saved_count = 0
+                    skipped: list[str] = []
+                    for idx in selected_rows:
+                        try:
+                            row_idx = int(idx)
+                        except Exception:
+                            continue
+                        if not (0 <= row_idx < len(overview_view_df)):
+                            continue
+                        row_view = overview_view_df.iloc[row_idx]
+                        company_name = str(row_view.get("기업명") or "").strip()
+                        ticker = clean_valid_ticker(str(row_view.get("티커") or ""))
+                        sector = str(row_view.get("산업섹터") or "").strip()
+                        if not company_name:
+                            continue
+                        if not ticker and not sector:
+                            skipped.append(company_name)
+                            continue
+                        upsert_company_list_entry(
+                            company_name,
+                            ticker=ticker,
+                            sector=sector,
+                            source="manual_save_selected",
+                        )
+                        saved_count += 1
+                    st.session_state["analysis_bulk_selected_save_notice"] = (
+                        f"선택 항목 저장 완료: {saved_count}개"
+                    )
+                    if skipped:
+                        preview = ", ".join(skipped[:6])
+                        remain = len(skipped) - min(6, len(skipped))
+                        tail = f" 외 {remain}개" if remain > 0 else ""
+                        st.session_state["analysis_bulk_selected_save_warning"] = (
+                            f"티커/섹터가 비어 저장하지 못한 항목: {preview}{tail}"
+                        )
+                    st.rerun()
 
-        if save_selected_meta_btn:
-            ticker_raw = _sanitize_widget_text(st.session_state.get("analysis_selected_overview_ticker_input"), "")
-            sector_new = _sanitize_widget_text(st.session_state.get("analysis_selected_overview_sector_input"), "")
-            ticker_new = clean_valid_ticker(ticker_raw)
-            if ticker_raw and not ticker_new:
-                st.warning("티커 형식이 올바르지 않습니다. 예: NOV, AAPL, 005930.KS")
-            elif not ticker_new and not sector_new:
-                st.warning("수정할 티커 또는 산업섹터를 입력해 주세요.")
-            else:
-                upsert_company_list_entry(
-                    selected_company_for_edit,
-                    ticker=ticker_new,
-                    sector=sector_new,
-                    source="manual_edit",
-                )
-                if ticker_new:
-                    st.session_state["analysis_ticker_pending"] = ticker_new
-                    st.session_state["analysis_ticker_source"] = "기업 리스트 수동 수정"
-                st.session_state["analysis_company_name_pending"] = selected_company_for_edit
-                st.session_state["analysis_company_hint"] = "직접입력"
-                st.session_state["analysis_ticker_autofill_notice"] = (
-                    f"{selected_company_for_edit} 수정 저장 완료"
-                    + (f" (티커 {ticker_new})" if ticker_new else "")
-                )
-                st.rerun()
+            if delete_selected_btn:
+                if not selected_names:
+                    st.warning("먼저 표에서 기업을 1개 이상 체크해 주세요.")
+                else:
+                    deleted_count = 0
+                    skipped_non_watch: list[str] = []
+                    for name in selected_names:
+                        nm = str(name or "").strip()
+                        if not nm:
+                            continue
+                        if nm not in listed_set:
+                            skipped_non_watch.append(nm)
+                            continue
+                        delete_company_list_entry(nm)
+                        deleted_count += 1
+                        if (st.session_state.get("analysis_company_name_input") or "").strip() == nm:
+                            st.session_state["analysis_company_name_pending"] = ""
+                            st.session_state["analysis_ticker_pending"] = ""
 
-        if clear_selected_ticker_btn:
-            cleared = clear_company_list_ticker(selected_company_for_edit, source="manual_edit_clear")
-            if not cleared:
-                st.warning("티커를 비울 기업을 찾지 못했습니다.")
-            else:
-                st.session_state["analysis_selected_overview_ticker_input"] = ""
-                st.session_state["analysis_ticker_pending"] = ""
-                st.session_state["analysis_ticker_source"] = "기업 리스트 수동 초기화"
-                st.session_state["analysis_company_name_pending"] = selected_company_for_edit
-                st.session_state["analysis_company_hint"] = "직접입력"
-                st.session_state["analysis_ticker_autofill_notice"] = (
-                    f"{selected_company_for_edit} 티커를 비우고 주가 캐시를 초기화했습니다."
+                    if deleted_count > 0:
+                        st.session_state["analysis_bulk_selected_delete_notice"] = (
+                            f"선택 관심목록 삭제 완료: {deleted_count}개"
+                        )
+                    if skipped_non_watch:
+                        preview = ", ".join(skipped_non_watch[:6])
+                        remain = len(skipped_non_watch) - min(6, len(skipped_non_watch))
+                        tail = f" 외 {remain}개" if remain > 0 else ""
+                        st.session_state["analysis_bulk_selected_delete_warning"] = (
+                            f"보유종목만 존재해 관심목록 삭제를 건너뜀: {preview}{tail}"
+                        )
+                    if deleted_count == 0 and not skipped_non_watch:
+                        st.session_state["analysis_bulk_selected_delete_warning"] = "삭제 가능한 관심목록 항목이 없습니다."
+                    st.rerun()
+
+            if selected_rows:
+                row_idx = int(selected_rows[0])
+                if 0 <= row_idx < len(overview_view_df):
+                    picked_name = str(overview_view_df.iloc[row_idx].get("기업명") or "").strip()
+                    picked_ticker = clean_valid_ticker(str(overview_view_df.iloc[row_idx].get("티커") or ""))
+                    picked_sector = str(overview_view_df.iloc[row_idx].get("산업섹터") or "").strip()
+                    prev_selected_name = _sanitize_widget_text(st.session_state.get("analysis_selected_overview_company"), "")
+                    if picked_name and picked_name != prev_selected_name:
+                        st.session_state["analysis_selected_overview_company"] = picked_name
+                        st.session_state["analysis_selected_overview_ticker_input"] = picked_ticker
+                        st.session_state["analysis_selected_overview_sector_input"] = picked_sector
+                    need_apply = False
+                    if picked_name and picked_name != current_input_name:
+                        st.session_state["analysis_company_name_pending"] = picked_name
+                        need_apply = True
+                    if picked_ticker and picked_ticker != current_input_ticker:
+                        st.session_state["analysis_ticker_pending"] = picked_ticker
+                        need_apply = True
+                    if need_apply:
+                        st.session_state["analysis_company_hint"] = "직접입력"
+                        st.rerun()
+
+        selected_company_for_edit = _sanitize_widget_text(st.session_state.get("analysis_selected_overview_company"), "")
+        if selected_company_for_edit:
+            st.markdown("##### 선택 기업 티커/섹터 수정")
+            edit_col1, edit_col2, edit_col3, edit_col4, edit_col5 = st.columns([1.0, 1.0, 1.1, 0.75, 0.85])
+            with edit_col1:
+                st.caption(f"선택 기업: **{selected_company_for_edit}**")
+            with edit_col2:
+                st.text_input(
+                    "수정 티커",
+                    key="analysis_selected_overview_ticker_input",
+                    placeholder="예: NOV / 005930.KS",
                 )
-                st.rerun()
+            with edit_col3:
+                st.text_input(
+                    "수정 산업섹터(선택)",
+                    key="analysis_selected_overview_sector_input",
+                    placeholder="예: Energy / 반도체",
+                )
+            with edit_col4:
+                save_selected_meta_btn = st.button("선택값 저장", key="analysis_save_selected_meta_btn")
+            with edit_col5:
+                clear_selected_ticker_btn = st.button("티커 비우기", key="analysis_clear_selected_ticker_btn")
+
+            if save_selected_meta_btn:
+                ticker_raw = _sanitize_widget_text(st.session_state.get("analysis_selected_overview_ticker_input"), "")
+                sector_new = _sanitize_widget_text(st.session_state.get("analysis_selected_overview_sector_input"), "")
+                ticker_new = clean_valid_ticker(ticker_raw)
+                if ticker_raw and not ticker_new:
+                    st.warning("티커 형식이 올바르지 않습니다. 예: NOV, AAPL, 005930.KS")
+                elif not ticker_new and not sector_new:
+                    st.warning("수정할 티커 또는 산업섹터를 입력해 주세요.")
+                else:
+                    upsert_company_list_entry(
+                        selected_company_for_edit,
+                        ticker=ticker_new,
+                        sector=sector_new,
+                        source="manual_edit",
+                    )
+                    if ticker_new:
+                        st.session_state["analysis_ticker_pending"] = ticker_new
+                        st.session_state["analysis_ticker_source"] = "기업 리스트 수동 수정"
+                    st.session_state["analysis_company_name_pending"] = selected_company_for_edit
+                    st.session_state["analysis_company_hint"] = "직접입력"
+                    st.session_state["analysis_ticker_autofill_notice"] = (
+                        f"{selected_company_for_edit} 수정 저장 완료"
+                        + (f" (티커 {ticker_new})" if ticker_new else "")
+                    )
+                    st.rerun()
+
+            if clear_selected_ticker_btn:
+                cleared = clear_company_list_ticker(selected_company_for_edit, source="manual_edit_clear")
+                if not cleared:
+                    st.warning("티커를 비울 기업을 찾지 못했습니다.")
+                else:
+                    st.session_state["analysis_selected_overview_ticker_input"] = ""
+                    st.session_state["analysis_ticker_pending"] = ""
+                    st.session_state["analysis_ticker_source"] = "기업 리스트 수동 초기화"
+                    st.session_state["analysis_company_name_pending"] = selected_company_for_edit
+                    st.session_state["analysis_company_hint"] = "직접입력"
+                    st.session_state["analysis_ticker_autofill_notice"] = (
+                        f"{selected_company_for_edit} 티커를 비우고 주가 캐시를 초기화했습니다."
+                    )
+                    st.rerun()
 
     st.markdown("##### AI 옵션")
     st.checkbox("yfinance 티커 검색 실패 시 AI 티커 추론 사용", key="analysis_use_ai_ticker")
@@ -11156,6 +11195,8 @@ def render_company_analysis_tab(current_df: pd.DataFrame) -> None:
             st.session_state["analysis_raw_materials"] = latest.get("raw_materials") or ""
             st.session_state["analysis_profit_up_factors"] = latest.get("profit_up_factors") or ""
             st.session_state["analysis_profit_down_factors"] = latest.get("profit_down_factors") or ""
+            st.session_state["analysis_investment_thesis"] = latest.get("investment_thesis") or ""
+            st.session_state["analysis_valuation_view"] = latest.get("valuation_view") or ""
             st.session_state["analysis_key_takeaway"] = latest.get("note") or ""
         if "analysis_ticker_pending" in st.session_state:
             st.rerun()
