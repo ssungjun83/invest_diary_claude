@@ -899,6 +899,12 @@ def get_conn() -> sqlite3.Connection:
         )
         """
     )
+    ca_columns = {row[1] for row in conn.execute("PRAGMA table_info(company_analysis)").fetchall()}
+    if "investment_thesis" not in ca_columns:
+        conn.execute("ALTER TABLE company_analysis ADD COLUMN investment_thesis TEXT")
+    if "valuation_view" not in ca_columns:
+        conn.execute("ALTER TABLE company_analysis ADD COLUMN valuation_view TEXT")
+
     company_list_columns = {row[1] for row in conn.execute("PRAGMA table_info(company_list)").fetchall()}
     if "sector" not in company_list_columns:
         conn.execute("ALTER TABLE company_list ADD COLUMN sector TEXT")
@@ -6412,7 +6418,9 @@ def generate_company_analysis_with_ai(
 - raw_materials: array[string] (실제 원재료/부품/연료/물류/설비/외주요소를 구체명으로 6~12개)
 - profit_up_factors: array[string] (이익 증가 조건 + 좋은 변화/촉매 6~12개)
 - profit_down_factors: array[string] (이익 감소 조건 + 핵심 리스크 6~12개)
-- key_takeaway: string (핵심 결론 + 체크포인트 3~6문장)
+- investment_thesis: array[string] (이 기업에 투자할 구체적 이유 3~5개: 성장 트리거·경쟁우위·이벤트·모멘텀 포함, 일반론 배제)
+- valuation_view: string (현재 PER/PBR/배당수익률 수준 기반으로 저평가·적정·고평가 판단 + 역사적 밴드 대비 위치 2~3문장)
+- key_takeaway: string (핵심 결론 + 투자 전 확인할 체크포인트 3~6문장)
 
 반드시 포함할 내용:
 1) 회사가 정확히 무엇을 하는지(사업모델/고객/주요 지역/판매 채널)
@@ -6421,6 +6429,8 @@ def generate_company_analysis_with_ai(
 4) 어떤 상황에서 이익이 늘고/줄어드는지(구체 트리거)
 5) 기업에 유리한 변화(촉매)와 불리한 리스크
 6) 미래 아이템/신규 사업/신규 투자 파이프라인 최소 3개 이상
+7) 현재 밸류에이션(PER/PBR/배당)의 역사적 수준 대비 평가
+8) 지금 이 주식을 살 구체적 이유(투자 논거)
 
 주의:
 - 추정 표현은 명시(예: 추정/가정)
@@ -6452,6 +6462,8 @@ def generate_company_analysis_with_ai(
         "raw_materials",
         "profit_up_factors",
         "profit_down_factors",
+        "investment_thesis",
+        "valuation_view",
         "key_takeaway",
     }
 
@@ -6513,6 +6525,12 @@ def generate_company_analysis_with_ai(
         ),
         "profit_down_factors": _lines_to_text(
             _pick(parsed_obj, "profit_down_factors", "risks", "downside", "profitDownFactors", "이익감소요인")
+        ),
+        "investment_thesis": _lines_to_text(
+            _pick(parsed_obj, "investment_thesis", "thesis", "buy_thesis", "투자논거", "투자이유")
+        ),
+        "valuation_view": _lines_to_text(
+            _pick(parsed_obj, "valuation_view", "valuation", "valuation_comment", "밸류에이션")
         ),
         "key_takeaway": _lines_to_text(
             _pick(parsed_obj, "key_takeaway", "takeaway", "summary", "keyTakeaway", "요약메모")
@@ -6720,13 +6738,15 @@ def save_company_analysis(
                 raw_materials,
                 profit_up_factors,
                 profit_down_factors,
+                investment_thesis,
+                valuation_view,
                 financial_summary_json,
                 source,
                 ai_model,
                 note,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 date_str,
@@ -6737,6 +6757,8 @@ def save_company_analysis(
                 analysis.get("raw_materials") or None,
                 analysis.get("profit_up_factors") or None,
                 analysis.get("profit_down_factors") or None,
+                analysis.get("investment_thesis") or None,
+                analysis.get("valuation_view") or None,
                 json.dumps(financial_payload, ensure_ascii=False) if financial_payload else None,
                 source or "ai",
                 ai_model or DEFAULT_AI_MODEL,
@@ -8726,6 +8748,8 @@ def apply_analysis_history_to_editor(latest_row: pd.Series) -> None:
         "analysis_raw_materials": str(latest_row.get("raw_materials") or ""),
         "analysis_profit_up_factors": str(latest_row.get("profit_up_factors") or ""),
         "analysis_profit_down_factors": str(latest_row.get("profit_down_factors") or ""),
+        "analysis_investment_thesis": str(latest_row.get("investment_thesis") or ""),
+        "analysis_valuation_view": str(latest_row.get("valuation_view") or ""),
         "analysis_key_takeaway": str(latest_row.get("note") or latest_row.get("key_takeaway") or ""),
     }
     st.session_state["analysis_history_apply_notice"] = "선택한 이력 내용을 상단 '기업 분석 내용'에 반영했습니다."
@@ -11260,6 +11284,8 @@ def render_company_analysis_tab(current_df: pd.DataFrame) -> None:
             st.session_state["analysis_raw_materials"] = analysis.get("raw_materials", "")
             st.session_state["analysis_profit_up_factors"] = analysis.get("profit_up_factors", "")
             st.session_state["analysis_profit_down_factors"] = analysis.get("profit_down_factors", "")
+            st.session_state["analysis_investment_thesis"] = analysis.get("investment_thesis", "")
+            st.session_state["analysis_valuation_view"] = analysis.get("valuation_view", "")
             st.session_state["analysis_key_takeaway"] = analysis.get("key_takeaway", "")
             save_company_analysis(
                 analysis_date=st.session_state["analysis_date"],
@@ -11279,7 +11305,76 @@ def render_company_analysis_tab(current_df: pd.DataFrame) -> None:
             )
             st.success(f"{company_name} 기업 분석 생성/저장을 완료했습니다.")
 
+    # ── 재무지표 카드 ────────────────────────────────────────────────
+    fs_cache = st.session_state.get("analysis_financial_summary_cache") or {}
+    if isinstance(fs_cache, dict) and fs_cache:
+        st.markdown("#### 핵심 재무지표")
+
+        def _fmtv(v, suffix="", decimals=1):
+            try:
+                f = float(v)
+                return f"{f:.{decimals}f}{suffix}"
+            except Exception:
+                return "-"
+
+        def _metric_delta(v, good_positive=True):
+            """값이 양수면 good_positive에 따라 ▲/▼ 색상 결정용 delta 반환"""
+            try:
+                f = float(v)
+                sign = "▲" if f >= 0 else "▼"
+                return f"{sign} {abs(f):.1f}"
+            except Exception:
+                return None
+
+        mc = fs_cache.get("market_cap")
+        mc_label = "-"
+        if mc:
+            try:
+                mc_f = float(mc)
+                if mc_f >= 1e12:
+                    mc_label = f"{mc_f/1e12:.2f}T"
+                elif mc_f >= 1e9:
+                    mc_label = f"{mc_f/1e9:.2f}B"
+                elif mc_f >= 1e6:
+                    mc_label = f"{mc_f/1e6:.2f}M"
+                else:
+                    mc_label = f"{mc_f:,.0f}"
+            except Exception:
+                pass
+
+        fi_cols = st.columns(7)
+        metrics_cfg = [
+            ("시가총액", mc_label, None),
+            ("PER(선행)", _fmtv(fs_cache.get("forward_pe"), "x"), None),
+            ("PBR", _fmtv(fs_cache.get("price_to_book"), "x"), None),
+            ("ROE", _fmtv(fs_cache.get("roe_pct"), "%"), None),
+            ("배당수익률", _fmtv(fs_cache.get("dividend_yield_pct"), "%"), None),
+            ("매출성장률", _fmtv(fs_cache.get("revenue_growth_pct"), "%"), None),
+            ("영업이익률", _fmtv(fs_cache.get("operating_margin_pct"), "%"), None),
+        ]
+        for col, (label, val, delta) in zip(fi_cols, metrics_cfg):
+            col.metric(label, val, delta)
+
+        fi_cols2 = st.columns(5)
+        metrics_cfg2 = [
+            ("PER(TTM)", _fmtv(fs_cache.get("trailing_pe"), "x")),
+            ("부채/자본", _fmtv(fs_cache.get("debt_to_equity"), "x")),
+            ("유동비율", _fmtv(fs_cache.get("current_ratio"), "x")),
+            ("베타", _fmtv(fs_cache.get("beta"), "")),
+            ("EPS성장률", _fmtv(fs_cache.get("earnings_growth_pct"), "%")),
+        ]
+        for col, (label, val) in zip(fi_cols2, metrics_cfg2):
+            col.metric(label, val)
+        st.caption(f"섹터: {fs_cache.get('sector') or '-'}  /  산업: {fs_cache.get('industry') or '-'}  /  국가: {fs_cache.get('country') or '-'}")
+
+    # ── 분석 내용 ────────────────────────────────────────────────────
     st.markdown("#### 기업 분석 내용")
+
+    # 세션 상태 초기화
+    for _k in ("analysis_investment_thesis", "analysis_valuation_view"):
+        if _k not in st.session_state:
+            st.session_state[_k] = ""
+
     st.text_area(
         "기업 개요",
         key="analysis_company_overview",
@@ -11310,26 +11405,65 @@ def render_company_analysis_tab(current_df: pd.DataFrame) -> None:
             chars_per_line=62,
         ),
     )
-    st.text_area(
-        "이익 증가 요인·좋은 변화(촉매)",
-        key="analysis_profit_up_factors",
-        height=estimate_textarea_height(
-            st.session_state.get("analysis_profit_up_factors", ""),
-            min_height=96,
-            max_height=430,
-            chars_per_line=62,
-        ),
-    )
-    st.text_area(
-        "이익 감소 요인(리스크)",
-        key="analysis_profit_down_factors",
-        height=estimate_textarea_height(
-            st.session_state.get("analysis_profit_down_factors", ""),
-            min_height=96,
-            max_height=430,
-            chars_per_line=62,
-        ),
-    )
+
+    # Bull / Bear 2컬럼 레이아웃
+    bull_col, bear_col = st.columns(2)
+    with bull_col:
+        st.markdown("🟢 **이익 증가 요인 / 촉매 (Bull)**")
+        st.text_area(
+            "이익 증가 요인·좋은 변화(촉매)",
+            key="analysis_profit_up_factors",
+            height=estimate_textarea_height(
+                st.session_state.get("analysis_profit_up_factors", ""),
+                min_height=160,
+                max_height=500,
+                chars_per_line=30,
+            ),
+            label_visibility="collapsed",
+        )
+    with bear_col:
+        st.markdown("🔴 **이익 감소 요인 / 리스크 (Bear)**")
+        st.text_area(
+            "이익 감소 요인(리스크)",
+            key="analysis_profit_down_factors",
+            height=estimate_textarea_height(
+                st.session_state.get("analysis_profit_down_factors", ""),
+                min_height=160,
+                max_height=500,
+                chars_per_line=30,
+            ),
+            label_visibility="collapsed",
+        )
+
+    # 투자 논거 & 밸류에이션
+    inv_col, val_col = st.columns(2)
+    with inv_col:
+        st.markdown("💡 **투자 논거** (매수를 고려할 이유)")
+        st.text_area(
+            "투자 논거",
+            key="analysis_investment_thesis",
+            height=estimate_textarea_height(
+                st.session_state.get("analysis_investment_thesis", ""),
+                min_height=130,
+                max_height=400,
+                chars_per_line=30,
+            ),
+            label_visibility="collapsed",
+        )
+    with val_col:
+        st.markdown("📊 **밸류에이션 평가** (저평가/적정/고평가)")
+        st.text_area(
+            "밸류에이션 평가",
+            key="analysis_valuation_view",
+            height=estimate_textarea_height(
+                st.session_state.get("analysis_valuation_view", ""),
+                min_height=130,
+                max_height=400,
+                chars_per_line=30,
+            ),
+            label_visibility="collapsed",
+        )
+
     st.text_area(
         "요약 메모",
         key="analysis_key_takeaway",
@@ -11347,6 +11481,8 @@ def render_company_analysis_tab(current_df: pd.DataFrame) -> None:
         "raw_materials": st.session_state.get("analysis_raw_materials", ""),
         "profit_up_factors": st.session_state.get("analysis_profit_up_factors", ""),
         "profit_down_factors": st.session_state.get("analysis_profit_down_factors", ""),
+        "investment_thesis": st.session_state.get("analysis_investment_thesis", ""),
+        "valuation_view": st.session_state.get("analysis_valuation_view", ""),
         "key_takeaway": st.session_state.get("analysis_key_takeaway", ""),
     }
     report_has_content = any(str(v or "").strip() for v in report_analysis.values())
@@ -11418,6 +11554,8 @@ def render_company_analysis_tab(current_df: pd.DataFrame) -> None:
                     "raw_materials": st.session_state.get("analysis_raw_materials", ""),
                     "profit_up_factors": st.session_state.get("analysis_profit_up_factors", ""),
                     "profit_down_factors": st.session_state.get("analysis_profit_down_factors", ""),
+                    "investment_thesis": st.session_state.get("analysis_investment_thesis", ""),
+                    "valuation_view": st.session_state.get("analysis_valuation_view", ""),
                     "key_takeaway": st.session_state.get("analysis_key_takeaway", ""),
                 },
                 source="manual",
