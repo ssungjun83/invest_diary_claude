@@ -13552,7 +13552,7 @@ def main() -> None:
         st.session_state["github_sync_notice"] = f"내장 티커 자동 교정 완료: {corrected_builtin_global}개"
         st.rerun()
 
-    tab_options = ["대시보드", "기록 입력", "환율", "기업정보", "기업분석", "밸류체인", "기업 점수", "API 설정"]
+    tab_options = ["대시보드", "기록 입력", "환율", "기업정보", "밸류체인", "기업분석", "기업 점수", "API 설정"]
     if "active_main_tab" not in st.session_state:
         st.session_state["active_main_tab"] = "대시보드"
     if st.session_state.get("active_main_tab") not in tab_options:
