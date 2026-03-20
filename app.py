@@ -7827,8 +7827,11 @@ def initialize_api_settings(force: bool = False) -> None:
     daily_auto_last_summary = str(settings.get("daily_auto_snapshot_last_summary", "") or "").strip()
 
     # Secure source priority: secrets/env > DB
+    # Claude: ANTHROPIC_API_KEY (공식 표준) / CLAUDE_API_KEY 모두 지원
     global_openai_key = _read_first_secret_or_env(["OPENAI_API_KEY", "GLOBAL_OPENAI_API_KEY"]) or global_openai_key
-    global_claude_key = _read_first_secret_or_env(["CLAUDE_API_KEY", "GLOBAL_CLAUDE_API_KEY"]) or global_claude_key
+    global_claude_key = _read_first_secret_or_env(
+        ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "GLOBAL_CLAUDE_API_KEY", "GLOBAL_ANTHROPIC_API_KEY"]
+    ) or global_claude_key
     global_alpha_key = _read_first_secret_or_env(["ALPHA_VANTAGE_API_KEY", "GLOBAL_ALPHA_VANTAGE_API_KEY"]) or global_alpha_key
     global_finnhub_key = _read_first_secret_or_env(["FINNHUB_API_KEY", "GLOBAL_FINNHUB_API_KEY"]) or global_finnhub_key
     gh_secret = _load_github_settings_from_secrets()
