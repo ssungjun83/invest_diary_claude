@@ -1,0 +1,25 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local runtime / logs
+*.log
+
+# Local database (includes saved API keys in app_settings)
+portfolio.db
+*.db
+*.sqlite
+*.sqlite3
+내 주식자산.xlsx
+
+# Secret files
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+secrets.toml
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
