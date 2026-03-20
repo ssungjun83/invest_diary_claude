@@ -7828,12 +7828,16 @@ def initialize_api_settings(force: bool = False) -> None:
 
     # Secure source priority: secrets/env > DB
     # Claude: ANTHROPIC_API_KEY (공식 표준) / CLAUDE_API_KEY 모두 지원
-    global_openai_key = _read_first_secret_or_env(["OPENAI_API_KEY", "GLOBAL_OPENAI_API_KEY"]) or global_openai_key
-    global_claude_key = _read_first_secret_or_env(
+    secrets_openai_key = _read_first_secret_or_env(["OPENAI_API_KEY", "GLOBAL_OPENAI_API_KEY"])
+    secrets_claude_key = _read_first_secret_or_env(
         ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "GLOBAL_CLAUDE_API_KEY", "GLOBAL_ANTHROPIC_API_KEY"]
-    ) or global_claude_key
-    global_alpha_key = _read_first_secret_or_env(["ALPHA_VANTAGE_API_KEY", "GLOBAL_ALPHA_VANTAGE_API_KEY"]) or global_alpha_key
-    global_finnhub_key = _read_first_secret_or_env(["FINNHUB_API_KEY", "GLOBAL_FINNHUB_API_KEY"]) or global_finnhub_key
+    )
+    secrets_alpha_key = _read_first_secret_or_env(["ALPHA_VANTAGE_API_KEY", "GLOBAL_ALPHA_VANTAGE_API_KEY"])
+    secrets_finnhub_key = _read_first_secret_or_env(["FINNHUB_API_KEY", "GLOBAL_FINNHUB_API_KEY"])
+    global_openai_key = secrets_openai_key or global_openai_key
+    global_claude_key = secrets_claude_key or global_claude_key
+    global_alpha_key = secrets_alpha_key or global_alpha_key
+    global_finnhub_key = secrets_finnhub_key or global_finnhub_key
     gh_secret = _load_github_settings_from_secrets()
     github_token = (gh_secret.get("token") or "").strip() or github_token
     github_repo = _normalize_github_repo_value((gh_secret.get("repo") or "").strip()) or github_repo
@@ -7880,6 +7884,17 @@ def initialize_api_settings(force: bool = False) -> None:
     for k, v in global_map.items():
         if force or k not in st.session_state:
             st.session_state[k] = v
+
+    # API Keys: Secrets에 값이 있으면 항상 세션 스테이트를 덮어씀(재실행해도 즉시 반영).
+    if secrets_claude_key:
+        st.session_state["global_claude_api_key"] = global_claude_key
+        for _p in ["analysis", "score", "compare"]:
+            st.session_state[f"{_p}_claude_api_key"] = global_claude_key
+        st.session_state["score_ai_api_key"] = global_claude_key
+    if secrets_openai_key:
+        st.session_state["global_openai_api_key"] = global_openai_key
+        for _p in ["analysis", "score", "compare"]:
+            st.session_state[f"{_p}_openai_api_key"] = global_openai_key
 
     # GitHub 관련은 Secrets를 항상 우선 반영한다(기존 세션 값이 있어도 덮어씀).
     if github_repo or github_excel_path or github_token or github_sync_enabled_secret or github_sync_on_change_secret:
